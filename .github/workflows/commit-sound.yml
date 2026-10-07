@@ -1,0 +1,53 @@
+name: Commit sound
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: >-
+      github.repository_owner == 'Count-Sheep'
+      && github.event.head_commit.message != 'ci: install private commit notifications'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Join the notification tailnet segment
+        # tailscale/github-action v4, pinned to its immutable commit.
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Notify the private Mac listener
+        env:
+          PUSH_SOUND_TOKEN: ${{ secrets.PUSH_SOUND_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REF: ${{ github.ref }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # Let the new ephemeral node receive its peer map, then make exactly
+          # one request. There is no retry that could deliver after the Mac wakes.
+          sleep 5
+          commit_count=$(jq '.commits | length' "$GITHUB_EVENT_PATH")
+          if [ "$commit_count" -eq 0 ]; then
+            echo "No branch commits in this push; nothing to play."
+            exit 0
+          fi
+          payload=$(jq -cn \
+            --arg repository "$REPOSITORY" \
+            --arg owner "$REPOSITORY_OWNER" \
+            --arg ref "$REF" \
+            --arg after "$AFTER" \
+            --argjson commit_count "$commit_count" \
+            --argjson commits "$(jq '[.commits[] | {id: .id, message: (.message | split("\n")[0]), url: .url}]' "$GITHUB_EVENT_PATH")" \
+            '{repository: {full_name: $repository, owner: {login: $owner}}, ref: $ref, after: $after, commit_count: $commit_count, commits: $commits}')
+          curl --fail-with-body \
+            --connect-timeout 5 --max-time 10 \
+            -X POST \
+            -H "Authorization: Bearer $PUSH_SOUND_TOKEN" \
+            -H "X-GitHub-Event: push" \
+            -H "Content-Type: application/json" \
+            --data "$payload" \
+            http://100.115.161.28:9876/github-push
